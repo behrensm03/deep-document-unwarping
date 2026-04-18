@@ -85,6 +85,8 @@ class DocumentDewarpNet(nn.Module):
     def __init__(self):
         super().__init__()
 
+        print("Debug: Initializing DocumentDewarpNet with the tanh fix")
+
         # Pretrained ResNet-50 encoder, returns intermediate feature maps
         self.encoder = timm.create_model(
             'resnet50',
