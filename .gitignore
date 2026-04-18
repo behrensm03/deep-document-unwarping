@@ -3,6 +3,7 @@ renders.zip
 .DS_Store
 test_input/
 model_out/
+best_model_m2.pth
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
