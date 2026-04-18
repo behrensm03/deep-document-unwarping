@@ -1,6 +1,8 @@
 renders/
 renders.zip
 .DS_Store
+test_input/
+model_out/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
