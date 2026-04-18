@@ -24,9 +24,7 @@ def main():
     print(f"Using device: {device}")
 
     # Load model
-    # model = DocumentDewarpNet().to(device)
-    # TODO: switch to model 2 when ready
-    model = SimpleEncoderDecoder().to(device)
+    model = DocumentDewarpNet().to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
     print("==> Model loaded successfully")
