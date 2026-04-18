@@ -152,7 +152,7 @@ class DocumentDewarpNet(nn.Module):
         d0 = self.dec0(F.interpolate(d1, size=(H, W), mode='bilinear', align_corners=True))
 
         # Flow field
-        flow = self.head(d0)  # [B, 2, H, W]
+        flow = torch.tanh(self.head(d0))  # [B, 2, H, W]
 
         # Warp input using predicted flow
         grid = create_base_grid(B, H, W, x.device)
