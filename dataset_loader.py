@@ -432,66 +432,69 @@ class DocumentReconstructionModel(nn.Module):
         )
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 2):
+    def __init__(self, in_channels: int = 3, out_channels: int = 2, model_type='current'):
         super().__init__()
 
-        self.encoder = timm.create_model('resnet50', pretrained=True, features_only=True, out_indices=(0, 1, 2, 3, 4))
+        self.model_type = model_type
 
-        # Decoder: upsample + concatenate skip connections
-        self.dec4 = nn.Sequential(
-            nn.Conv2d(2048 + 1024, 512, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-        self.dec3 = nn.Sequential(
-            nn.Conv2d(512 + 512, 256, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-        self.dec2 = nn.Sequential(
-            nn.Conv2d(256 + 256, 128, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(128 + 64, 64, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-        self.dec0 = nn.Sequential(
-            nn.Conv2d(64, 32, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
+        if model_type == 'm1':
+            # # Simple encoder
+            self.encoder = nn.Sequential(
+                nn.Conv2d(in_channels, 64, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(64, 64, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2),
 
-        self.head = nn.Conv2d(32, 2, 1)  # 2 channels for flow field
+                nn.Conv2d(64, 128, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(128, 128, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2),
+            )
+
+            # Simple decoder
+            self.decoder = nn.Sequential(
+                nn.Conv2d(128, 128, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+
+                nn.Conv2d(128, 64, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+
+                nn.Conv2d(64, out_channels, 3, padding=1),
+                nn.Tanh()  # Output range [-1, 1]
+            )
+        elif model_type == 'current':
+            self.encoder = timm.create_model('resnet50', pretrained=True, features_only=True, out_indices=(0, 1, 2, 3, 4))
+
+            # Decoder: upsample + concatenate skip connections
+            self.dec4 = nn.Sequential(
+                nn.Conv2d(2048 + 1024, 512, 3, padding=1),
+                nn.ReLU(inplace=True),
+            )
+            self.dec3 = nn.Sequential(
+                nn.Conv2d(512 + 512, 256, 3, padding=1),
+                nn.ReLU(inplace=True),
+            )
+            self.dec2 = nn.Sequential(
+                nn.Conv2d(256 + 256, 128, 3, padding=1),
+                nn.ReLU(inplace=True),
+            )
+            self.dec1 = nn.Sequential(
+                nn.Conv2d(128 + 64, 64, 3, padding=1),
+                nn.ReLU(inplace=True),
+            )
+            self.dec0 = nn.Sequential(
+                nn.Conv2d(64, 32, 3, padding=1),
+                nn.ReLU(inplace=True),
+            )
+
+            self.head = nn.Conv2d(32, 2, 1)  # 2 channels for flow field
 
         # TODO: Replace this simple architecture with your own design
         # Consider using HuggingFace transformers or timm models as backbone
-
-        # # Simple encoder
-        # self.encoder = nn.Sequential(
-        #     nn.Conv2d(in_channels, 64, 3, padding=1),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(64, 64, 3, padding=1),
-        #     nn.ReLU(inplace=True),
-        #     nn.MaxPool2d(2),
-
-        #     nn.Conv2d(64, 128, 3, padding=1),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(128, 128, 3, padding=1),
-        #     nn.ReLU(inplace=True),
-        #     nn.MaxPool2d(2),
-        # )
-
-        # # Simple decoder
-        # self.decoder = nn.Sequential(
-        #     nn.Conv2d(128, 128, 3, padding=1),
-        #     nn.ReLU(inplace=True),
-        #     nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-        #     nn.Conv2d(128, 64, 3, padding=1),
-        #     nn.ReLU(inplace=True),
-        #     nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-        #     nn.Conv2d(64, out_channels, 3, padding=1),
-        #     nn.Tanh()  # Output range [-1, 1]
-        # )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -507,44 +510,46 @@ class DocumentReconstructionModel(nn.Module):
         # TODO: Implement your forward pass
         # Consider predicting a flow field and using grid_sample for warping!
         B, C, H, W = x.shape
-        # features = self.encoder(x)
-        # output = self.decoder(features) # this is the flow
-        # grid = create_base_grid(B, H, W, x.device) + output.permute(0, 2, 3, 1)
-        # rectified = torch.nn.functional.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-        # return rectified, output
 
-        features = self.encoder(x)
-        e0, e1, e2, e3, e4 = features  # ResNet-50 feature maps at different stages
+        if self.model_type == 'm1':
+            features = self.encoder(x)
+            output = self.decoder(features) # this is the flow
+            grid = create_base_grid(B, H, W, x.device) + output.permute(0, 2, 3, 1)
+            rectified = torch.nn.functional.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+            return rectified, output
+        elif self.model_type == 'current':
+            features = self.encoder(x)
+            e0, e1, e2, e3, e4 = features  # ResNet-50 feature maps at different stages
 
-        # Decoder with skip connections
-        d4 = self.dec4(torch.cat([
-            F.interpolate(e4, size=e3.shape[2:], mode='bilinear', align_corners=True),
-            e3
-        ], dim=1))
+            # Decoder with skip connections
+            d4 = self.dec4(torch.cat([
+                F.interpolate(e4, size=e3.shape[2:], mode='bilinear', align_corners=True),
+                e3
+            ], dim=1))
 
-        d3 = self.dec3(torch.cat([
-            F.interpolate(d4, size=e2.shape[2:], mode='bilinear', align_corners=True),
-            e2
-        ], dim=1))
+            d3 = self.dec3(torch.cat([
+                F.interpolate(d4, size=e2.shape[2:], mode='bilinear', align_corners=True),
+                e2
+            ], dim=1))
 
-        d2 = self.dec2(torch.cat([
-            F.interpolate(d3, size=e1.shape[2:], mode='bilinear', align_corners=True),
-            e1
-        ], dim=1))
+            d2 = self.dec2(torch.cat([
+                F.interpolate(d3, size=e1.shape[2:], mode='bilinear', align_corners=True),
+                e1
+            ], dim=1))
 
-        d1 = self.dec1(torch.cat([
-            F.interpolate(d2, size=e0.shape[2:], mode='bilinear', align_corners=True),
-            e0
-        ], dim=1))
+            d1 = self.dec1(torch.cat([
+                F.interpolate(d2, size=e0.shape[2:], mode='bilinear', align_corners=True),
+                e0
+            ], dim=1))
 
-        d0 = self.dec0(F.interpolate(d1, size=(H, W), mode='bilinear', align_corners=True))
+            d0 = self.dec0(F.interpolate(d1, size=(H, W), mode='bilinear', align_corners=True))
 
-        # Flow field
-        flow = torch.tanh(self.head(d0))  # [B, 2, H, W]
+            # Flow field
+            flow = torch.tanh(self.head(d0))  # [B, 2, H, W]
 
-        grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
-        rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-        return rectified, flow
+            grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
+            rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+            return rectified, flow
 
 
 def create_base_grid(batch_size: int, height: int, width: int, device: torch.device) -> torch.Tensor:
