@@ -429,7 +429,7 @@ class DocumentReconstructionModel(nn.Module):
         )
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 3):
+    def __init__(self, in_channels: int = 3, out_channels: int = 2):
         super().__init__()
 
         # TODO: Replace this simple architecture with your own design
@@ -473,12 +473,16 @@ class DocumentReconstructionModel(nn.Module):
 
         Returns:
             Reconstructed image [B, 3, H, W]
+            Flow field [B, 2, H, W]
         """
         # TODO: Implement your forward pass
         # Consider predicting a flow field and using grid_sample for warping!
+        B, C, H, W = x.shape
         features = self.encoder(x)
-        output = self.decoder(features)
-        return output
+        output = self.decoder(features) # this is the flow
+        grid = create_base_grid(B, H, W, x.device) + output.permute(0, 2, 3, 1)
+        rectified = torch.nn.functional.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        return rectified, output
 
 
 def create_base_grid(batch_size: int, height: int, width: int, device: torch.device) -> torch.Tensor:
@@ -820,7 +824,7 @@ def train_one_epoch(
 
         # Forward pass
         optimizer.zero_grad()
-        output = model(rgb)
+        output, flow = model(rgb)
 
         # Compute loss (handles both standard and masked losses)
         if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -830,7 +834,7 @@ def train_one_epoch(
         elif isinstance(criterion, UVReconstructionLoss):
             # For advanced UV-based losses, extract additional outputs if available
             # This assumes your model returns (image, uv, flow) - adapt as needed
-            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
+            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow)
             loss = losses['total']
         else:
             # Standard loss (MSE, L1, etc.)
@@ -874,7 +878,7 @@ def validate(
             if mask is not None:
                 mask = mask.to(device)
 
-            output = model(rgb)
+            output, flow = model(rgb)
 
             # Compute loss (handles both standard and masked losses)
             if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -882,7 +886,7 @@ def validate(
             elif isinstance(criterion, SSIMLoss):
                 loss = criterion(output, ground_truth)
             elif isinstance(criterion, UVReconstructionLoss):
-                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
+                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow)
                 loss = losses['total']
             else:
                 loss = criterion(output, ground_truth)
@@ -966,8 +970,8 @@ def main():
     # )
 
     # TODO: Try different optimizers
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
 
     # Training loop
     best_val_loss = float('inf')
@@ -1017,7 +1021,7 @@ if __name__ == '__main__':
         visualize_batch(sample_batch, num_samples=min(4, sample_batch['rgb'].shape[0]))
 
         print("\nTo start training, uncomment the main() function call below")
-        # main()  # Uncomment this to start training
+        main()  # Uncomment this to start training
 
     except Exception as e:
         print(f"\nError loading dataset: {e}")
