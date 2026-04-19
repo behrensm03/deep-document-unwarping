@@ -432,7 +432,7 @@ class DocumentReconstructionModel(nn.Module):
         )
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 2, model_type='current'):
+    def __init__(self, in_channels: int = 3, out_channels: int = 2, model_type=''):
         super().__init__()
 
         self.model_type = model_type
@@ -466,7 +466,7 @@ class DocumentReconstructionModel(nn.Module):
                 nn.Conv2d(64, out_channels, 3, padding=1),
                 nn.Tanh()  # Output range [-1, 1]
             )
-        elif model_type == 'current':
+        elif model_type == 'm2' or model_type == 'm3':
             self.encoder = timm.create_model('resnet50', pretrained=True, features_only=True, out_indices=(0, 1, 2, 3, 4))
 
             # Decoder: upsample + concatenate skip connections
@@ -517,7 +517,7 @@ class DocumentReconstructionModel(nn.Module):
             grid = create_base_grid(B, H, W, x.device) + output.permute(0, 2, 3, 1)
             rectified = torch.nn.functional.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
             return rectified, output
-        elif self.model_type == 'current':
+        elif self.model_type == 'm2' or self.model_type == 'm3':
             features = self.encoder(x)
             e0, e1, e2, e3, e4 = features  # ResNet-50 feature maps at different stages
 
