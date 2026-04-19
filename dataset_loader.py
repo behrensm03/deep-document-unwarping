@@ -58,6 +58,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from PIL import Image
 import numpy as np
+from tqdm import tqdm
 
 
 class DocumentDataset(Dataset):
@@ -812,7 +813,7 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
 
-    for batch_idx, batch in enumerate(dataloader):
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1} [Train]")):
         # Move data to device
         rgb = batch['rgb'].to(device)
         ground_truth = batch['ground_truth'].to(device)
@@ -847,8 +848,8 @@ def train_one_epoch(
         total_loss += loss.item()
 
         # Print progress
-        if batch_idx % 10 == 0:
-            print(f"Epoch {epoch} [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f}")
+        # if batch_idx % 10 == 0:
+        #     print(f"Epoch {epoch} [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f}")
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
@@ -869,7 +870,7 @@ def validate(
     total_loss = 0.0
 
     with torch.no_grad():
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc="Validation"):
             rgb = batch['rgb'].to(device)
             ground_truth = batch['ground_truth'].to(device)
 
