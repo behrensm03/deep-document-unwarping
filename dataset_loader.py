@@ -250,7 +250,14 @@ class DocumentDataset(Dataset):
         if self.use_uv:
             uv = self._load_uv(base_name)
             if uv is not None:
-                uv_tensor = self.transform(uv)
+                # uv_tensor = self.transform(uv)
+                # sample['uv'] = uv_tensor
+                uv_transform = transforms.Compose([
+                    transforms.Resize(self.img_size),
+                    transforms.ToTensor(),  # [0, 1]
+                ])
+                uv_tensor = uv_transform(uv) * 2 - 1  # [-1, 1]
+                uv_tensor = uv_tensor[:2, :, :]  # only channels 0 and 1
                 sample['uv'] = uv_tensor
 
         if self.use_border:
