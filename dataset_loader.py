@@ -908,7 +908,10 @@ def train_one_epoch(
         elif isinstance(criterion, UVReconstructionLoss):
             # For advanced UV-based losses, extract additional outputs if available
             # This assumes your model returns (image, uv, flow) - adapt as needed
-            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow)
+            uv_gt = batch.get('uv', None)
+            if uv_gt is not None:
+                uv_gt = uv_gt.to(device)
+            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
             loss = losses['total']
         else:
             # Standard loss (MSE, L1, etc.)
@@ -960,7 +963,10 @@ def validate(
             elif isinstance(criterion, SSIMLoss):
                 loss = criterion(output, ground_truth)
             elif isinstance(criterion, UVReconstructionLoss):
-                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow)
+                uv_gt = batch.get('uv', None)
+                if uv_gt is not None:
+                    uv_gt = uv_gt.to(device)
+                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
                 loss = losses['total']
             else:
                 loss = criterion(output, ground_truth)
