@@ -554,9 +554,12 @@ class DocumentReconstructionModel(nn.Module):
             # Flow field
             flow = self.head(d0) # [B, 2, H, W]
 
-            grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
-            rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-            return rectified, flow
+            # return uv directly
+            return flow
+
+            # grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
+            # rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+            # return rectified, flow
 
 
 def create_base_grid(batch_size: int, height: int, width: int, device: torch.device) -> torch.Tensor:
@@ -898,7 +901,8 @@ def train_one_epoch(
 
         # Forward pass
         optimizer.zero_grad()
-        output, flow = model(rgb)
+        # output, flow = model(rgb)
+        pred_uv = model(rgb)
 
         # Compute loss (handles both standard and masked losses)
         if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -911,11 +915,17 @@ def train_one_epoch(
             uv_gt = batch.get('uv', None)
             if uv_gt is not None:
                 uv_gt = uv_gt.to(device)
-            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
+            losses = criterion(pred_image=None, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
             loss = losses['total']
         else:
             # Standard loss (MSE, L1, etc.)
-            loss = criterion(output, ground_truth)
+            # loss = criterion(output, ground_truth)
+            uv_gt = batch.get('uv', None)
+            if uv_gt is not None:
+              uv_gt = uv_gt.to(device)
+              loss = criterion(pred_uv, uv_gt)
+            else:
+              loss = criterion(pred_uv, ground_truth)
 
         # Backward pass
         loss.backward()
@@ -956,7 +966,8 @@ def validate(
             if mask is not None:
                 mask = mask.to(device)
 
-            output, flow = model(rgb)
+            # output, flow = model(rgb)
+            pred_uv = model(rgb)
 
             # Compute loss (handles both standard and masked losses)
             if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -970,7 +981,15 @@ def validate(
                 losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
                 loss = losses['total']
             else:
-                loss = criterion(output, ground_truth)
+                # loss = criterion(output, ground_truth)
+                # Standard loss (MSE, L1, etc.)
+              # loss = criterion(output, ground_truth)
+              uv_gt = batch.get('uv', None)
+              if uv_gt is not None:
+                uv_gt = uv_gt.to(device)
+                loss = criterion(pred_uv, uv_gt)
+              else:
+                loss = criterion(pred_uv, ground_truth)
 
             total_loss += loss.item()
 
@@ -1080,30 +1099,30 @@ def main():
     print(f"Best validation loss: {best_val_loss:.4f}")
 
 
-if __name__ == '__main__':
-    # Example: Just load and visualize data
-    print("Document Reconstruction Dataset Loader")
-    print("="*50)
+# if __name__ == '__main__':
+#     # Example: Just load and visualize data
+#     print("Document Reconstruction Dataset Loader")
+#     print("="*50)
 
-    # Quick test
-    try:
-        train_loader, val_loader = get_dataloaders(
-            data_dir='renders/synthetic_data_pitch_sweep',
-            batch_size=4,
-            img_size=(512, 512)
-        )
+#     # Quick test
+#     try:
+#         train_loader, val_loader = get_dataloaders(
+#             data_dir='renders/synthetic_data_pitch_sweep',
+#             batch_size=4,
+#             img_size=(512, 512)
+#         )
 
-        print("\nDataset loaded successfully!")
+#         print("\nDataset loaded successfully!")
 
-        # Visualize a sample batch
-        print("\nVisualizing a sample batch...")
-        sample_batch = next(iter(train_loader))
-        print(f"Batch shape - RGB: {sample_batch['rgb'].shape}, Ground Truth: {sample_batch['ground_truth'].shape}")
-        visualize_batch(sample_batch, num_samples=min(4, sample_batch['rgb'].shape[0]))
+#         # Visualize a sample batch
+#         print("\nVisualizing a sample batch...")
+#         sample_batch = next(iter(train_loader))
+#         print(f"Batch shape - RGB: {sample_batch['rgb'].shape}, Ground Truth: {sample_batch['ground_truth'].shape}")
+#         visualize_batch(sample_batch, num_samples=min(4, sample_batch['rgb'].shape[0]))
 
-        print("\nTo start training, uncomment the main() function call below")
-        main()  # Uncomment this to start training
+#         print("\nTo start training, uncomment the main() function call below")
+#         main()  # Uncomment this to start training
 
-    except Exception as e:
-        print(f"\nError loading dataset: {e}")
-        print("Please check that the data directory exists and contains the required files.")
+#     except Exception as e:
+#         print(f"\nError loading dataset: {e}")
+#         print("Please check that the data directory exists and contains the required files.")
