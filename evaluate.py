@@ -1,12 +1,14 @@
 import argparse
 import os
 import torch
-from model import DocumentDewarpNet, SimpleEncoderDecoder
+# from model import DocumentDewarpNet, SimpleEncoderDecoder
+from dataset_loader import DocumentReconstructionModel
 import glob
 from torchvision import transforms
 from PIL import Image
 import numpy as np
 from pytorch_msssim import ssim as ssim_func
+from tqdm import tqdm
 
 def main():
     parser = argparse.ArgumentParser(description='Document Dewarping Inference')
@@ -24,7 +26,8 @@ def main():
     print(f"Using device: {device}")
 
     # Load model
-    model = DocumentDewarpNet().to(device)
+    # model = DocumentDewarpNet().to(device)
+    model = DocumentReconstructionModel(model_type='m3').to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
     print("==> Model loaded successfully")
@@ -46,7 +49,7 @@ def main():
 
     ssim_scores = []
 
-    for input_path in input_files:
+    for input_path in tqdm(input_files, desc="Processing images"):
         base_name = os.path.splitext(os.path.basename(input_path))[0]
         # Extract just the N part from crumpled_N
         n = base_name.replace('crumpled_', '')
@@ -85,11 +88,11 @@ def main():
                 rectified_tensor = rectified.unsqueeze(0)
                 score = ssim_func(rectified_tensor, gt_tensor, data_range=1.0).item()
                 ssim_scores.append(score)
-                print(f"Processed {base_name} | SSIM: {score:.4f}")
-            else:
-                print(f"Processed {base_name} | no ground truth found")
-        else:
-            print(f"Processed {base_name}")
+                # print(f"Processed {base_name} | SSIM: {score:.4f}")
+            # else:
+                # print(f"Processed {base_name} | no ground truth found")
+        # else:
+        #     print(f"Processed {base_name}")
 
     if ssim_scores:
         print(f"\nMean SSIM: {sum(ssim_scores)/len(ssim_scores):.4f}")

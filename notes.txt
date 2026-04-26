@@ -1,0 +1,14 @@
+# forward_uv: [B, 2, H, W] — model output, predicts where each output pixel maps TO in flat space
+# To get backward map (where to sample from in input), use forward_uv to warp a coordinate grid
+
+coord_grid = create_base_grid(B, H, W, device)  # [B, H, W, 2], identity coords of input
+# Treat forward_uv as a sampling grid to pull input coordinates through
+backward_map = F.grid_sample(
+    coord_grid.permute(0, 3, 1, 2),        # [B, 2, H, W] — input coords as "image"
+    forward_uv.permute(0, 2, 3, 1),        # [B, H, W, 2] — where to look
+    mode='bilinear', padding_mode='border', align_corners=True
+)  # [B, 2, H, W] — for each output pixel, where in input to sample
+
+rectified = F.grid_sample(x, backward_map.permute(0, 2, 3, 1), ...)
+
+loss = F.l1_loss(predicted_forward_uv, target_uv)  # direct supervision, correct direction

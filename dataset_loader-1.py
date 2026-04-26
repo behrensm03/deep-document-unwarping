@@ -54,13 +54,10 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from PIL import Image
 import numpy as np
-from tqdm import tqdm
-import timm
 
 
 class DocumentDataset(Dataset):
@@ -250,14 +247,7 @@ class DocumentDataset(Dataset):
         if self.use_uv:
             uv = self._load_uv(base_name)
             if uv is not None:
-                # uv_tensor = self.transform(uv)
-                # sample['uv'] = uv_tensor
-                uv_transform = transforms.Compose([
-                    transforms.Resize(self.img_size),
-                    transforms.ToTensor(),  # [0, 1]
-                ])
-                uv_tensor = uv_transform(uv) * 2 - 1  # [-1, 1]
-                uv_tensor = uv_tensor[:2, :, :]  # only channels 0 and 1
+                uv_tensor = self.transform(uv)
                 sample['uv'] = uv_tensor
 
         if self.use_border:
@@ -439,69 +429,40 @@ class DocumentReconstructionModel(nn.Module):
         )
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 2, model_type=''):
+    def __init__(self, in_channels: int = 3, out_channels: int = 3):
         super().__init__()
-
-        self.model_type = model_type
-
-        if model_type == 'm1':
-            # # Simple encoder
-            self.encoder = nn.Sequential(
-                nn.Conv2d(in_channels, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(64, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),
-
-                nn.Conv2d(64, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(128, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),
-            )
-
-            # Simple decoder
-            self.decoder = nn.Sequential(
-                nn.Conv2d(128, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-                nn.Conv2d(128, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-                nn.Conv2d(64, out_channels, 3, padding=1),
-                # nn.Tanh()  # Output range [-1, 1]
-            )
-        elif model_type == 'm2' or model_type == 'm3':
-            self.encoder = timm.create_model('resnet50', pretrained=True, features_only=True, out_indices=(0, 1, 2, 3, 4))
-
-            # Decoder: upsample + concatenate skip connections
-            self.dec4 = nn.Sequential(
-                nn.Conv2d(2048 + 1024, 512, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec3 = nn.Sequential(
-                nn.Conv2d(512 + 512, 256, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec2 = nn.Sequential(
-                nn.Conv2d(256 + 256, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec1 = nn.Sequential(
-                nn.Conv2d(128 + 64, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec0 = nn.Sequential(
-                nn.Conv2d(64, 32, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-
-            self.head = nn.Conv2d(32, 2, 1)  # 2 channels for flow field
 
         # TODO: Replace this simple architecture with your own design
         # Consider using HuggingFace transformers or timm models as backbone
+
+        # Simple encoder
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 64, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+        )
+
+        # Simple decoder
+        self.decoder = nn.Sequential(
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+
+            nn.Conv2d(64, out_channels, 3, padding=1),
+            nn.Tanh()  # Output range [-1, 1]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -512,51 +473,12 @@ class DocumentReconstructionModel(nn.Module):
 
         Returns:
             Reconstructed image [B, 3, H, W]
-            Flow field [B, 2, H, W]
         """
         # TODO: Implement your forward pass
         # Consider predicting a flow field and using grid_sample for warping!
-        B, C, H, W = x.shape
-
-        if self.model_type == 'm1':
-            features = self.encoder(x)
-            output = self.decoder(features) # this is the flow
-            grid = create_base_grid(B, H, W, x.device) + output.permute(0, 2, 3, 1)
-            rectified = torch.nn.functional.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-            return rectified, output
-        elif self.model_type == 'm2' or self.model_type == 'm3':
-            features = self.encoder(x)
-            e0, e1, e2, e3, e4 = features  # ResNet-50 feature maps at different stages
-
-            # Decoder with skip connections
-            d4 = self.dec4(torch.cat([
-                F.interpolate(e4, size=e3.shape[2:], mode='bilinear', align_corners=True),
-                e3
-            ], dim=1))
-
-            d3 = self.dec3(torch.cat([
-                F.interpolate(d4, size=e2.shape[2:], mode='bilinear', align_corners=True),
-                e2
-            ], dim=1))
-
-            d2 = self.dec2(torch.cat([
-                F.interpolate(d3, size=e1.shape[2:], mode='bilinear', align_corners=True),
-                e1
-            ], dim=1))
-
-            d1 = self.dec1(torch.cat([
-                F.interpolate(d2, size=e0.shape[2:], mode='bilinear', align_corners=True),
-                e0
-            ], dim=1))
-
-            d0 = self.dec0(F.interpolate(d1, size=(H, W), mode='bilinear', align_corners=True))
-
-            # Flow field
-            flow = self.head(d0) # [B, 2, H, W]
-
-            grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
-            rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-            return rectified, flow
+        features = self.encoder(x)
+        output = self.decoder(features)
+        return output
 
 
 def create_base_grid(batch_size: int, height: int, width: int, device: torch.device) -> torch.Tensor:
@@ -886,7 +808,7 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1} [Train]")):
+    for batch_idx, batch in enumerate(dataloader):
         # Move data to device
         rgb = batch['rgb'].to(device)
         ground_truth = batch['ground_truth'].to(device)
@@ -898,7 +820,7 @@ def train_one_epoch(
 
         # Forward pass
         optimizer.zero_grad()
-        output, flow = model(rgb)
+        output = model(rgb)
 
         # Compute loss (handles both standard and masked losses)
         if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -908,10 +830,7 @@ def train_one_epoch(
         elif isinstance(criterion, UVReconstructionLoss):
             # For advanced UV-based losses, extract additional outputs if available
             # This assumes your model returns (image, uv, flow) - adapt as needed
-            uv_gt = batch.get('uv', None)
-            if uv_gt is not None:
-                uv_gt = uv_gt.to(device)
-            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
+            losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
             loss = losses['total']
         else:
             # Standard loss (MSE, L1, etc.)
@@ -919,14 +838,13 @@ def train_one_epoch(
 
         # Backward pass
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         total_loss += loss.item()
 
         # Print progress
-        # if batch_idx % 10 == 0:
-        #     print(f"Epoch {epoch} [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f}")
+        if batch_idx % 10 == 0:
+            print(f"Epoch {epoch} [{batch_idx}/{len(dataloader)}] Loss: {loss.item():.4f}")
 
     avg_loss = total_loss / len(dataloader)
     return avg_loss
@@ -947,7 +865,7 @@ def validate(
     total_loss = 0.0
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Validation"):
+        for batch in dataloader:
             rgb = batch['rgb'].to(device)
             ground_truth = batch['ground_truth'].to(device)
 
@@ -956,7 +874,7 @@ def validate(
             if mask is not None:
                 mask = mask.to(device)
 
-            output, flow = model(rgb)
+            output = model(rgb)
 
             # Compute loss (handles both standard and masked losses)
             if isinstance(criterion, (MaskedL1Loss, MaskedMSELoss)):
@@ -964,10 +882,7 @@ def validate(
             elif isinstance(criterion, SSIMLoss):
                 loss = criterion(output, ground_truth)
             elif isinstance(criterion, UVReconstructionLoss):
-                uv_gt = batch.get('uv', None)
-                if uv_gt is not None:
-                    uv_gt = uv_gt.to(device)
-                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask, flow=flow, target_uv=uv_gt, pred_uv=flow)
+                losses = criterion(pred_image=output, target_image=ground_truth, mask=mask)
                 loss = losses['total']
             else:
                 loss = criterion(output, ground_truth)
@@ -1051,8 +966,8 @@ def main():
     # )
 
     # TODO: Try different optimizers
-    # optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
 
     # Training loop
     best_val_loss = float('inf')
@@ -1102,7 +1017,7 @@ if __name__ == '__main__':
         visualize_batch(sample_batch, num_samples=min(4, sample_batch['rgb'].shape[0]))
 
         print("\nTo start training, uncomment the main() function call below")
-        main()  # Uncomment this to start training
+        # main()  # Uncomment this to start training
 
     except Exception as e:
         print(f"\nError loading dataset: {e}")
