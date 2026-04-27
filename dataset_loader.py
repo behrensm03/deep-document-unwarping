@@ -212,10 +212,13 @@ class DocumentDataset(Dataset):
 
         Returns:
             Dictionary containing:
-                - 'rgb': Input warped document image [3, H, W]
-                - 'ground_truth': Target flat texture [3, H, W]
+                - 'rgb': Input warped document image [3, H, W] (ImageNet-normalized)
+                - 'ground_truth': Target flat texture [3, H, W] (ImageNet-normalized)
                 - 'depth': Depth map [1, H, W] (if use_depth=True)
-                - 'uv': UV map [3, H, W] (if use_uv=True)
+                - 'uv': UV map [2, H, W] in [0, 1] — channel 0 = U, 1 = V
+                        (raw geometric coords, NOT ImageNet-normalized) (if use_uv=True)
+                - 'uv_mask': Foreground mask [1, H, W] auto-derived from the
+                             UV map (background = uniform gray) (if use_uv=True)
                 - 'border': Border mask [1, H, W] (if use_border=True)
                 - 'filename': Base filename (string)
         """
@@ -250,15 +253,20 @@ class DocumentDataset(Dataset):
         if self.use_uv:
             uv = self._load_uv(base_name)
             if uv is not None:
-                # uv_tensor = self.transform(uv)
-                # sample['uv'] = uv_tensor
-                uv_transform = transforms.Compose([
+                # UV is geometric data, not pixel intensities — load as raw
+                # [0, 1] floats (Resize + ToTensor only, NO ImageNet normalize).
+                uv_full = transforms.Compose([
                     transforms.Resize(self.img_size),
-                    transforms.ToTensor(),  # [0, 1]
-                ])
-                uv_tensor = uv_transform(uv) * 2 - 1  # [-1, 1]
-                uv_tensor = uv_tensor[:2, :, :]  # only channels 0 and 1
-                sample['uv'] = uv_tensor
+                    transforms.ToTensor(),
+                ])(uv)  # [3, H, W] in [0, 1]: (U, V, 0)
+
+                # Foreground mask is free here: background is uniform gray
+                # (R == G == B) from the renderer's world clear color, paper
+                # has distinct U/V values so its channels differ.
+                uv_mask = ~((uv_full[0] == uv_full[1]) & (uv_full[1] == uv_full[2]))
+
+                sample['uv'] = uv_full[:2]                   # [2, H, W]: (U, V)
+                sample['uv_mask'] = uv_mask.unsqueeze(0).float()  # [1, H, W]
 
         if self.use_border:
             border = self._load_border(base_name)
@@ -390,6 +398,105 @@ def visualize_batch(batch: Dict[str, torch.Tensor], num_samples: int = 4):
     plt.tight_layout()
     plt.show()
 
+def visualize_sample(
+    sample: Dict[str, torch.Tensor],
+    save_path: Optional[str] = None,
+    show: bool = False,
+    title: Optional[str] = None,
+):
+    """
+    Render one dataset sample with every available modality side-by-side,
+    each panel labelled with its name. Useful for adding a single
+    illustration to a writeup / project doc.
+
+    Picks up whichever of {rgb, ground_truth, uv, uv_mask, border, depth}
+    are present in the sample dict. RGB and ground_truth are denormalised
+    out of ImageNet stats so they look natural. UV is shown as a colour map
+    (R=U, G=V); masks and depth are shown grayscale.
+
+    Args:
+        sample:    Either a single sample dict from DocumentDataset[idx]
+                   (tensors shaped [C, H, W]) or one selected from a
+                   dataloader batch (tensors shaped [B, C, H, W] — index 0
+                   will be used).
+        save_path: If given, save the figure to this path (PNG/PDF).
+        show:      If True, also open an interactive window.
+        title:     Optional overall figure title (e.g. the filename).
+    """
+    import matplotlib.pyplot as plt
+
+    def _take_first(t: torch.Tensor) -> torch.Tensor:
+        return t[0] if t.dim() == 4 else t
+
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    panels: List[Tuple[np.ndarray, str, Optional[str]]] = []  # (img, label, cmap)
+
+    if 'rgb' in sample:
+        rgb = _take_first(sample['rgb']).cpu()
+        rgb = (rgb * std + mean).clamp(0, 1).permute(1, 2, 0).numpy()
+        panels.append((rgb, "Input RGB (warped)", None))
+
+    if 'ground_truth' in sample:
+        gt = _take_first(sample['ground_truth']).cpu()
+        gt = (gt * std + mean).clamp(0, 1).permute(1, 2, 0).numpy()
+        panels.append((gt, "Ground truth (flat)", None))
+
+    if 'uv' in sample:
+        uv = _take_first(sample['uv']).cpu()  # [2, H, W] in [0, 1]
+        H, W = uv.shape[-2:]
+        uv_rgb = torch.zeros(3, H, W)
+        uv_rgb[:2] = uv
+        uv_rgb = uv_rgb.clamp(0, 1).permute(1, 2, 0).numpy()
+        panels.append((uv_rgb, "UV map (R=U, G=V)", None))
+
+    if 'uv_mask' in sample:
+        m = _take_first(sample['uv_mask']).cpu().squeeze(0).numpy()
+        panels.append((m, "UV mask (auto)", 'gray'))
+
+    if 'border' in sample:
+        b = _take_first(sample['border']).cpu().squeeze(0).numpy()
+        panels.append((b, "Border mask", 'gray'))
+
+    if 'depth' in sample:
+        d = _take_first(sample['depth']).cpu().squeeze(0).numpy()
+        panels.append((d, "Depth", 'viridis'))
+
+    if not panels:
+        raise ValueError("Sample dict has no recognised modalities to plot.")
+
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4.6))
+    if n == 1:
+        axes = [axes]
+    for ax, (img, label, cmap) in zip(axes, panels):
+        if cmap:
+            ax.imshow(img, cmap=cmap)
+        else:
+            ax.imshow(img)
+        ax.set_title(label, fontsize=14)
+        ax.axis('off')
+
+    if title is None and 'filename' in sample:
+        fname = sample['filename']
+        if isinstance(fname, list):  # batch case
+            fname = fname[0]
+        title = str(fname)
+    if title:
+        fig.suptitle(title, fontsize=11, y=1.02)
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=140, bbox_inches='tight')
+        print(f"Saved sample visualization to {save_path}")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
 
 # ============================================================================
 # STARTER CODE FOR DOCUMENT RECONSTRUCTION MODEL
@@ -439,66 +546,34 @@ class DocumentReconstructionModel(nn.Module):
         )
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 2, model_type=''):
+    def __init__(self, in_channels: int = 3, out_channels: int = 3):
         super().__init__()
 
-        self.model_type = model_type
+        self.encoder = timm.create_model('resnet50', pretrained=True, features_only=True, out_indices=(0, 1, 2, 3, 4))
 
-        if model_type == 'm1':
-            # # Simple encoder
-            self.encoder = nn.Sequential(
-                nn.Conv2d(in_channels, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(64, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),
+        # Decoder: upsample + concatenate skip connections
+        self.dec4 = nn.Sequential(
+            nn.Conv2d(2048 + 1024, 512, 3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(512 + 512, 256, 3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(256 + 256, 128, 3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(128 + 64, 64, 3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.dec0 = nn.Sequential(
+            nn.Conv2d(64, 32, 3, padding=1),
+            nn.ReLU(inplace=True),
+        )
 
-                nn.Conv2d(64, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(128, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),
-            )
-
-            # Simple decoder
-            self.decoder = nn.Sequential(
-                nn.Conv2d(128, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-                nn.Conv2d(128, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-
-                nn.Conv2d(64, out_channels, 3, padding=1),
-                # nn.Tanh()  # Output range [-1, 1]
-            )
-        elif model_type == 'm2' or model_type == 'm3':
-            self.encoder = timm.create_model('resnet50', pretrained=True, features_only=True, out_indices=(0, 1, 2, 3, 4))
-
-            # Decoder: upsample + concatenate skip connections
-            self.dec4 = nn.Sequential(
-                nn.Conv2d(2048 + 1024, 512, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec3 = nn.Sequential(
-                nn.Conv2d(512 + 512, 256, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec2 = nn.Sequential(
-                nn.Conv2d(256 + 256, 128, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec1 = nn.Sequential(
-                nn.Conv2d(128 + 64, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-            self.dec0 = nn.Sequential(
-                nn.Conv2d(64, 32, 3, padding=1),
-                nn.ReLU(inplace=True),
-            )
-
-            self.head = nn.Conv2d(32, 2, 1)  # 2 channels for flow field
+        self.head = nn.Conv2d(32, 2, 1)  # 2 channels for flow field
 
         # TODO: Replace this simple architecture with your own design
         # Consider using HuggingFace transformers or timm models as backbone
@@ -518,48 +593,41 @@ class DocumentReconstructionModel(nn.Module):
         # Consider predicting a flow field and using grid_sample for warping!
         B, C, H, W = x.shape
 
-        if self.model_type == 'm1':
-            features = self.encoder(x)
-            output = self.decoder(features) # this is the flow
-            grid = create_base_grid(B, H, W, x.device) + output.permute(0, 2, 3, 1)
-            rectified = torch.nn.functional.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-            return rectified, output
-        elif self.model_type == 'm2' or self.model_type == 'm3':
-            features = self.encoder(x)
-            e0, e1, e2, e3, e4 = features  # ResNet-50 feature maps at different stages
+        features = self.encoder(x)
+        e0, e1, e2, e3, e4 = features  # ResNet-50 feature maps at different stages
 
-            # Decoder with skip connections
-            d4 = self.dec4(torch.cat([
-                F.interpolate(e4, size=e3.shape[2:], mode='bilinear', align_corners=True),
-                e3
-            ], dim=1))
+        # Decoder with skip connections
+        d4 = self.dec4(torch.cat([
+            F.interpolate(e4, size=e3.shape[2:], mode='bilinear', align_corners=True),
+            e3
+        ], dim=1))
 
-            d3 = self.dec3(torch.cat([
-                F.interpolate(d4, size=e2.shape[2:], mode='bilinear', align_corners=True),
-                e2
-            ], dim=1))
+        d3 = self.dec3(torch.cat([
+            F.interpolate(d4, size=e2.shape[2:], mode='bilinear', align_corners=True),
+            e2
+        ], dim=1))
 
-            d2 = self.dec2(torch.cat([
-                F.interpolate(d3, size=e1.shape[2:], mode='bilinear', align_corners=True),
-                e1
-            ], dim=1))
+        d2 = self.dec2(torch.cat([
+            F.interpolate(d3, size=e1.shape[2:], mode='bilinear', align_corners=True),
+            e1
+        ], dim=1))
 
-            d1 = self.dec1(torch.cat([
-                F.interpolate(d2, size=e0.shape[2:], mode='bilinear', align_corners=True),
-                e0
-            ], dim=1))
+        d1 = self.dec1(torch.cat([
+            F.interpolate(d2, size=e0.shape[2:], mode='bilinear', align_corners=True),
+            e0
+        ], dim=1))
 
-            d0 = self.dec0(F.interpolate(d1, size=(H, W), mode='bilinear', align_corners=True))
+        d0 = self.dec0(F.interpolate(d1, size=(H, W), mode='bilinear', align_corners=True))
 
-            # Flow field
-            flow = self.head(d0) # [B, 2, H, W]
+        # Flow field
+        flow = self.head(d0) # [B, 2, H, W]
 
-            # return uv directly
-            return flow
+        # return uv directly
+        return flow
 
-            # grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
-            # rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
-            # return rectified, flow
+        # grid = create_base_grid(B, H, W, x.device) + flow.permute(0, 2, 3, 1)
+        # rectified = F.grid_sample(x, grid, mode='bilinear', padding_mode='border', align_corners=True)
+        # return rectified, flow
 
 
 def create_base_grid(batch_size: int, height: int, width: int, device: torch.device) -> torch.Tensor:
@@ -783,6 +851,23 @@ class UVReconstructionLoss(nn.Module):
     2. Optional UV map supervision (if your model predicts UV explicitly)
     3. Optional flow smoothness regularization
 
+    IMPORTANT — UV channel layout:
+        target_uv coming from DocumentDataset is shape [B, 2, H, W] (channels
+        are U and V; the redundant zero B channel is dropped during loading).
+        Your model's pred_uv must match: predict 2 channels, not 3.
+
+    IMPORTANT — using SSIM with UV supervision:
+        SSIMLoss is image-oriented and assumes >=3 channels. With loss_type
+        ='ssim', the same SSIMLoss instance is reused for the UV branch, so
+        passing 2-channel UV tensors will fail. Options:
+            (a) Use loss_type='l1' or 'mse' for the UV branch (recommended,
+                since UV is geometric coordinates, not perceptual imagery), or
+            (b) Replicate one channel before computing SSIM:
+                    pred_uv3   = torch.cat([pred_uv,   pred_uv[:,  :1]], 1)
+                    target_uv3 = torch.cat([target_uv, target_uv[:, :1]], 1)
+        The image branch (pred_image / target_image) is unaffected — those
+        are 3-channel and work with SSIM normally.
+
     Args:
         reconstruction_weight: Weight for image reconstruction loss
         uv_weight: Weight for UV map loss (set to 0 if not predicting UV)
@@ -849,6 +934,9 @@ class UVReconstructionLoss(nn.Module):
         total_loss = self.reconstruction_weight * losses['reconstruction']
 
         # 2. UV supervision loss (if applicable)
+        # Note: target_uv from DocumentDataset is [B, 2, H, W]. If
+        # loss_type='ssim', SSIMLoss expects >=3 channels and will fail here
+        # — use 'l1' or 'mse' for the UV branch (see class docstring).
         if self.uv_weight > 0 and pred_uv is not None and target_uv is not None:
             if self.use_ssim:
                 losses['uv'] = self.recon_loss(pred_uv, target_uv)

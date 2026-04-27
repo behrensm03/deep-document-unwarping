@@ -46,11 +46,11 @@ The dataset is located in `renders/synthetic_data_pitch_sweep/` with the followi
 
 ```
 renders/synthetic_data_pitch_sweep/
-├── rgb/           # Input: Warped document images (JPEG)
-├── ground_truth/  # Target: Original flat paper textures (PNG)
-├── depth/         # Optional: Depth maps (EXR format)
-├── uv/           # Optional: UV coordinate maps (PNG)
-└── border/       # Optional: Document boundary masks (PNG)
+├── rgb/           # Input: Warped document images (JPEG, 1080x1280)
+├── ground_truth/  # Target: Flat paper textures (PNG, 512x512)
+├── uv/            # UV coordinate maps (PNG, R=U, G=V, both linear in [0,1])
+├── border/        # Document boundary masks (Freestyle silhouette, PNG)
+└── depth/         # (Optional) Depth maps as multilayer OPEN_EXR
 ```
 
 Each sample has a filename like:
@@ -58,23 +58,41 @@ Each sample has a filename like:
 Gemini_Generated_Image_ABCDEF_paper_paper_01_P5_R0_A04.jpg
 ```
 
+**Notes about the data:**
+
+- The **UV map** is the ground-truth coordinate map: pixel `(x, y)` in the rendered image came from texture coordinate `(u, v) = uv_map[y, x][:2]` on the flat paper, both in `[0, 1]`. The blue channel is unused (always 0). Background pixels are encoded as a uniform gray (`R == G == B`) — this is automatically used by `DocumentDataset` to derive a clean foreground mask (`sample['uv_mask']`).
+- The **ground truth** has been resized to `512 × 512` to match the realistic upper bound a UV-based dewarp can reach from a `1080 × 1280` render, so reconstruction losses compare like-with-like.
+- A **reference dewarping script `uv_dewarp.py`** is provided. It uses the GT UV map to splat each source pixel onto a flat canvas via bilinear forward warp — giving the *upper-bound* of what any UV-predicting model could achieve from a particular sample. Useful as a sanity check, a teaching aid, and a baseline for your model's results. Run with `python uv_dewarp.py --rgb <path> --uv <path> --side-by-side panel.png`.
+
 ### 3. Load and Visualize Data
 
 ```python
-from dataset_loader import get_dataloaders, visualize_batch
+from dataset_loader import get_dataloaders, visualize_batch, DocumentDataset, visualize_sample
 
 # Create dataloaders
 train_loader, val_loader = get_dataloaders(
     data_dir='renders/synthetic_data_pitch_sweep',
     batch_size=8,
     train_split=0.8,
-    img_size=(512, 512)
+    img_size=(512, 512),
+    use_uv=True,      # also load the GT UV map (sample['uv'])
+    use_border=True,  # also load the Freestyle border (sample['border'])
 )
 
-# Visualize samples
+# Quick batch overview (RGB | GT pairs)
 sample_batch = next(iter(train_loader))
 visualize_batch(sample_batch, num_samples=4)
+
+# Full single-sample overview with all modalities labelled — handy for
+# debugging or for figures in your report.
+ds = DocumentDataset(data_dir='renders/synthetic_data_pitch_sweep',
+                     use_uv=True, use_border=True)
+visualize_sample(ds[0], save_path='dataset_sample.png', show=True)
 ```
+
+When `use_uv=True`, every sample also carries:
+- `sample['uv']` shape `[2, H, W]` in `[0, 1]` — channels are `(U, V)`. **Note: it is 2 channels, not 3** (we drop the redundant zero blue channel during loading).
+- `sample['uv_mask']` shape `[1, H, W]` — pixel-perfect foreground mask auto-derived from the UV map's gray-pixel background. **Generally cleaner than `sample['border']`**, which can have disconnected Freestyle artefacts; prefer `uv_mask` for masked losses unless you have a specific reason not to.
 
 ### 4. Implement Your Model
 
@@ -296,16 +314,19 @@ loss = criterion(predicted, ground_truth)
 
 **Why use masking?** Your dataset includes background pixels that are not part of the document. Without masking, the network wastes capacity learning to reconstruct backgrounds instead of focusing on the document surface.
 
-The dataset includes border masks (`border/`) that indicate document regions. Use these to focus training only on document pixels:
+The dataset provides two ways to get a foreground mask:
+
+- **`sample['uv_mask']` (recommended)** — auto-derived from the UV map's gray-pixel background. Pixel-perfect, no holes, available whenever you set `use_uv=True`. No separate file needed.
+- **`sample['border']`** — a Freestyle silhouette rendered as PNG in `border/`. Available when `use_border=True`, but can have disconnected edge artefacts.
 
 ```python
 from dataset_loader import MaskedL1Loss
 
-# Load data with border masks
+# Load data with UV maps (gives us both `uv` and `uv_mask`)
 train_loader, val_loader = get_dataloaders(
     data_dir='renders/synthetic_data_pitch_sweep',
-    use_border=True,  # Enable border mask loading
-    batch_size=8
+    use_uv=True,      # also exposes sample['uv_mask']
+    batch_size=8,
 )
 
 # Use masked loss
@@ -315,7 +336,7 @@ criterion = MaskedL1Loss(use_mask=True)
 for batch in train_loader:
     rgb = batch['rgb'].to(device)
     gt = batch['ground_truth'].to(device)
-    mask = batch['border'].to(device)  # [B, 1, H, W]
+    mask = batch['uv_mask'].to(device)  # [B, 1, H, W] — clean, from UV map
 
     output = model(rgb)
     loss = criterion(output, gt, mask)  # Only compute loss on document pixels
@@ -329,46 +350,47 @@ for batch in train_loader:
 
 #### UV Map Supervision (Advanced)
 
-If your model explicitly predicts UV coordinates (as in the flow-based approach), you can supervise the UV prediction directly:
+If your model explicitly predicts UV coordinates (as in the flow-based approach), you can supervise the UV prediction directly. Two important things to know up front:
+
+1. **`batch['uv']` has shape `[B, 2, H, W]`**, not `[B, 3, H, W]` — channels are `(U, V)`, both already in `[0, 1]` (no ImageNet normalisation). Your model's `pred_uv` head should output 2 channels too, in the same range.
+2. **Use `loss_type='l1'` or `'mse'` for UV supervision, not `'ssim'`.** SSIM expects 3-channel images and will fail on 2-channel UV tensors. (The image branch can still use SSIM — that's separate.)
 
 ```python
 from dataset_loader import UVReconstructionLoss
 
-# Load with UV maps
+# Load with UV maps (also exposes batch['uv_mask'])
 train_loader, val_loader = get_dataloaders(
     data_dir='renders/synthetic_data_pitch_sweep',
     use_uv=True,
-    use_border=True,
-    batch_size=8
+    batch_size=8,
 )
 
-# Combined loss
+# Combined loss — l1/mse works on both image and UV.
 criterion = UVReconstructionLoss(
     reconstruction_weight=1.0,  # Weight for final image
     uv_weight=0.5,              # Weight for UV map
-    smoothness_weight=0.01,     # Weight for flow smoothness
+    smoothness_weight=0.01,     # Weight for flow smoothness (TV)
     use_mask=True,
-    loss_type='l1'
+    loss_type='l1',             # 'l1' or 'mse' for the UV branch
 )
 
 # In training
 for batch in train_loader:
     rgb = batch['rgb'].to(device)
     gt = batch['ground_truth'].to(device)
-    gt_uv = batch['uv'].to(device)
-    mask = batch['border'].to(device)
+    gt_uv = batch['uv'].to(device)         # [B, 2, H, W] in [0, 1]
+    mask = batch['uv_mask'].to(device)     # [B, 1, H, W] from UV map
 
-    # Model predicts both image and UV
+    # Model predicts both image and UV (2-channel UV head!)
     output, predicted_uv, flow = model(rgb)
 
-    # Compute combined loss
     losses = criterion(
         pred_image=output,
         target_image=gt,
         pred_uv=predicted_uv,
         target_uv=gt_uv,
         flow=flow,
-        mask=mask
+        mask=mask,
     )
 
     total_loss = losses['total']
