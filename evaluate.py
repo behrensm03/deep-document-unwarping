@@ -1,103 +1,96 @@
 import argparse
 import os
-import torch
-# from model import DocumentDewarpNet, SimpleEncoderDecoder
-from dataset_loader import DocumentReconstructionModel
-import glob
-from torchvision import transforms
-from PIL import Image
 import numpy as np
-from pytorch_msssim import ssim as ssim_func
+import torch
+from PIL import Image
 from tqdm import tqdm
+from model import DocumentReconstructionModel
+from uv_dewarp import dewarp_with_uv
+from dataset_loader import get_dataloaders
+import torch.nn as nn
+from pytorch_msssim import ssim
 
 def main():
-    parser = argparse.ArgumentParser(description='Document Dewarping Inference')
-    parser.add_argument('--input_dir', type=str, required=True, help='Path to input folder')
-    parser.add_argument('--output_dir', type=str, required=True, help='Path to output folder')
-    parser.add_argument('--weights', type=str, required=True, help='Path to model weights')
-    parser.add_argument('--ground_truth_dir', type=str, default=None) # TODO: is this allowed or do we need to figure out where this comes from
+    parser = argparse.ArgumentParser(description="Document dewarping inference")
+    parser.add_argument('--weights',    default='best_model.pth', help='Path to model weights')
+    parser.add_argument('--output', default='./ssim-output.txt', help='File to save SSIM results')
     args = parser.parse_args()
 
-    # TODO: naming conventions are confusing - what is expected? is ground truth ssim calc supposed to be here or part of the model processing?
+    # Configuration
+    DATA_DIR = 'renders/synthetic_data_pitch_sweep'
+    BATCH_SIZE = 8
+    IMG_SIZE = (256, 256)
 
-    # Setup
-    os.makedirs(args.output_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-
-    # Load model
-    # model = DocumentDewarpNet().to(device)
-    model = DocumentReconstructionModel(model_type='m3').to(device)
-    model.load_state_dict(torch.load(args.weights, map_location=device))
+    # load model
+    model = DocumentReconstructionModel().to(device)
+    state = torch.load(args.weights, map_location=device)
+    if isinstance(state, dict) and 'model_state' in state:
+        state = state['model_state']
+    model.load_state_dict(state)
     model.eval()
-    print("==> Model loaded successfully")
+    print(f"Loaded weights from {args.weights}")
 
-    # Transforms (same as training)
-    transform = transforms.Compose([
-        transforms.Resize((512, 512)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
-    ])
-
-    # Find all input files
-    input_files = sorted(
-        glob.glob(os.path.join(args.input_dir, '*.png')) +
-        glob.glob(os.path.join(args.input_dir, '*.jpg'))
+    train_loader, val_loader = get_dataloaders(
+        data_dir=DATA_DIR,
+        batch_size=BATCH_SIZE,
+        img_size=IMG_SIZE,
+        use_depth=False,  # TODO: Set to True if you want to use depth information
+        use_uv=True,     # TODO: Set to True if you want to use UV maps
+        use_border=False  # TODO: Set to True if you want to use border masks for better training
     )
-    print(f"Found {len(input_files)} images")
 
-    ssim_scores = []
+    # cut val set in half to create a test set
+    val_dataset = val_loader.dataset
+    test_size = len(val_dataset) // 2
+    test_dataset = torch.utils.data.Subset(val_dataset, range(test_size))
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    for input_path in tqdm(input_files, desc="Processing images"):
-        base_name = os.path.splitext(os.path.basename(input_path))[0]
-        # Extract just the N part from crumpled_N
-        n = base_name.replace('crumpled_', '')
+    # compute ssim on test set
+    ssim_values = []
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Evaluating on test set"):
+            rgb = batch['rgb'].to(device)  # (B, 3, H, W)
+            gt_uv_t = batch['uv']  # (B, 2, H, W)
+            filenames = batch['filename'] 
+            
+            pred_uv_t = model(rgb)  # (B, 2, H, W)
 
-        # Load and preprocess
-        img = Image.open(input_path).convert('RGB')
-        img_tensor = transform(img).unsqueeze(0).to(device)  # [1, 3, H, W]
+            for i in range(rgb.size(0)):
+                filename = filenames[i]
 
-        # Inference
-        with torch.no_grad():
-            rectified, flow = model(img_tensor)
+                # need raw rgb for the dewarp
+                rgb_raw = np.array(Image.open(os.path.join(DATA_DIR, 'rgb', f'{filename}.jpg')).convert('RGB').resize(IMG_SIZE, Image.BILINEAR))
+                
+                pred_uv = pred_uv_t[i].cpu().numpy().transpose(1, 2, 0).clip(0, 1)
+                
+                # foreground mask from GT UV
+                gt_uv = gt_uv_t[i].numpy().transpose(1, 2, 0)
+                fg_mask = ~((gt_uv[:, :, 0] == gt_uv[:, :, 1]) & (gt_uv[:, :, 1] == 0))
 
-        # Denormalize rectified output
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
-        rectified = (rectified.squeeze(0) * std + mean).clamp(0, 1)
+                # dewarp
+                warped = dewarp_with_uv(rgb_raw, pred_uv, out_size=256, mask=fg_mask)
 
-        # Save rectified image
-        rectified_np = (rectified.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-        Image.fromarray(rectified_np).save(os.path.join(args.output_dir, f'rectified_{n}.png'))
+                # load GT
+                gt_img = np.array(Image.open(os.path.join(DATA_DIR, 'ground_truth', f'{filename}.png')).convert('RGB').resize(IMG_SIZE, Image.BILINEAR))
 
-        # Save UV visualization
-        flow_np = flow.squeeze(0).cpu().numpy()  # [2, H, W]
-        flow_np = (flow_np - flow_np.min()) / (flow_np.max() - flow_np.min() + 1e-8)
-        uv_vis = np.zeros((flow_np.shape[1], flow_np.shape[2], 3), dtype=np.uint8)
-        uv_vis[:, :, 0] = (flow_np[0] * 255).astype(np.uint8)  # R = x flow
-        uv_vis[:, :, 1] = (flow_np[1] * 255).astype(np.uint8)  # G = y flow
-        Image.fromarray(uv_vis).save(os.path.join(args.output_dir, f'predicted_uv_{n}.png'))
+                # calc ssim
+                warped_t = torch.from_numpy(warped).float().permute(2, 0, 1).unsqueeze(0)
+                gt_t = torch.from_numpy(gt_img).float().permute(2, 0, 1).unsqueeze(0)
 
-         # Compute SSIM if ground truth provided
-        if args.ground_truth_dir:
-            gt_path = os.path.join(args.ground_truth_dir, f'{base_name}.png')
-            if os.path.exists(gt_path):
-                gt = Image.open(gt_path).convert('RGB')
-                gt_tensor = transform(gt).unsqueeze(0).to(device)
-                rectified_tensor = rectified.unsqueeze(0)
-                score = ssim_func(rectified_tensor, gt_tensor, data_range=1.0).item()
-                ssim_scores.append(score)
-                # print(f"Processed {base_name} | SSIM: {score:.4f}")
-            # else:
-                # print(f"Processed {base_name} | no ground truth found")
-        # else:
-        #     print(f"Processed {base_name}")
+                ssim_values.append(ssim(warped_t, gt_t, data_range=255).item()) # TODO: what is data range here?
+    
+    print(f"Average SSIM: {np.mean(ssim_values):.4f}")
+    print(f"N images: {len(ssim_values)}")
 
-    if ssim_scores:
-        print(f"\nMean SSIM: {sum(ssim_scores)/len(ssim_scores):.4f}")
-        print(f"Min SSIM: {min(ssim_scores):.4f}")
-        print(f"Max SSIM: {max(ssim_scores):.4f}")
+    
+    with open(args.output, 'w') as f:
+        f.write(f"Average SSIM: {np.mean(ssim_values)}\n")
+        f.write("SSIM values for each image:\n")
+        for s in ssim_values:
+            f.write(f"{s}\n")
 
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     main()
