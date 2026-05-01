@@ -28,8 +28,9 @@ def main():
     parser.add_argument('--input_dir',  required=True,            help='Folder of input images')
     parser.add_argument('--output_dir', default='./results',      help='Where to save outputs')
     parser.add_argument('--weights',    default='best_model.pth', help='Path to model weights')
-    parser.add_argument('--img_size',   type=int, default=256,    help='Img size (must match training size)')
     args = parser.parse_args()
+
+    IMG_SIZE = 256
 
     # create output dir
     os.makedirs(args.output_dir, exist_ok=True)
@@ -53,12 +54,17 @@ def main():
         return
     print(f"Found {len(image_files)} images")
 
+    # check if image size matches model input size
+    sample = Image.open(os.path.join(args.input_dir, image_files[0]))
+    if sample.size != (IMG_SIZE, IMG_SIZE):
+        print(f"Note: input images are {sample.size}, will be resized to ({IMG_SIZE}, {IMG_SIZE}) for model inference")
+
     # process the images
     with torch.no_grad():
         for n, frame in enumerate(tqdm(image_files, desc="Processing")):
             img_path = os.path.join(args.input_dir, frame)
             try:
-                tensor, rgb_raw = load_img(img_path, args.img_size)
+                tensor, rgb_raw = load_img(img_path, IMG_SIZE)
                 tensor = tensor.to(device)
 
                 # now run it through the model
@@ -66,7 +72,7 @@ def main():
                 pred_uv = pred_uv_t[0].cpu().numpy().transpose(1,2,0).clip(0,1)  # (2, H, W) -> (H, W, 2)
 
                 # call dewarping function
-                rectified = dewarp_with_uv(rgb_raw, pred_uv, out_size=args.img_size, mask=None)
+                rectified = dewarp_with_uv(rgb_raw, pred_uv, out_size=IMG_SIZE, mask=None)
 
                 # save outputs
                 rect_path = os.path.join(args.output_dir, f"rectified_{n}.png")
