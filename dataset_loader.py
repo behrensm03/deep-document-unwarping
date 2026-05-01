@@ -852,7 +852,7 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1} [Train]")):
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1} [Train]", leave=False)):
         # Move data to device
         rgb = batch['rgb'].to(device)
         ground_truth = batch['ground_truth'].to(device)
