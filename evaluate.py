@@ -69,10 +69,10 @@ def main():
                 fg_mask = ~((gt_uv[:, :, 0] == gt_uv[:, :, 1]) & (gt_uv[:, :, 1] == 0))
 
                 # dewarp
-                warped = dewarp_with_uv(rgb_raw, pred_uv, out_size=256, mask=fg_mask)
+                warped = dewarp_with_uv(rgb_raw, pred_uv, out_size=512, mask=fg_mask)
 
                 # load GT
-                gt_img = np.array(Image.open(os.path.join(DATA_DIR, 'ground_truth', f'{filename}.png')).convert('RGB').resize(IMG_SIZE, Image.BILINEAR))
+                gt_img = np.array(Image.open(os.path.join(DATA_DIR, 'ground_truth', f'{filename}.png')).convert('RGB').resize((512, 512), Image.BILINEAR))
 
                 # calc ssim
                 warped_t = torch.from_numpy(warped).float().permute(2, 0, 1).unsqueeze(0)

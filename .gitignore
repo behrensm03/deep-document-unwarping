@@ -4,8 +4,11 @@ renders.zip
 .DS_Store
 archive/
 test-inference/
+test-inference-gt/
+comparison/
 models/
 results/
+results-*/
 checkpoints/
 
 # Byte-compiled / optimized / DLL files

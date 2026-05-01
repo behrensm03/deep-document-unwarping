@@ -30,7 +30,7 @@ def main():
     parser.add_argument('--weights',    default='best_model.pth', help='Path to model weights')
     args = parser.parse_args()
 
-    IMG_SIZE = 256
+    IMG_SIZE = 512
 
     # create output dir
     os.makedirs(args.output_dir, exist_ok=True)
@@ -72,7 +72,7 @@ def main():
                 pred_uv = pred_uv_t[0].cpu().numpy().transpose(1,2,0).clip(0,1)  # (2, H, W) -> (H, W, 2)
 
                 # call dewarping function
-                rectified = dewarp_with_uv(rgb_raw, pred_uv, out_size=IMG_SIZE, mask=None)
+                rectified = dewarp_with_uv(rgb_raw, pred_uv, out_size=512, mask=None)
 
                 # save outputs
                 rect_path = os.path.join(args.output_dir, f"rectified_{n}.png")
