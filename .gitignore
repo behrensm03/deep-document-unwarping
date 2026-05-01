@@ -2,11 +2,10 @@ rendersv1/
 renders/
 renders.zip
 .DS_Store
-test_input/
-model_out/
-trainv1/
-trainv2/
-trainv3/
+archive/
+test-inference/
+models/
+results/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
