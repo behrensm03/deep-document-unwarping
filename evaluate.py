@@ -19,7 +19,7 @@ def main():
     # Configuration
     DATA_DIR = 'renders/synthetic_data_pitch_sweep'
     BATCH_SIZE = 8
-    IMG_SIZE = (256, 256)
+    IMG_SIZE = (512, 512)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # load model
@@ -47,7 +47,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     # compute ssim on test set
-    ssim_values = []
+    ssim_values, ssim_gt, ssim_no_dewarp = [], [], []
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating on test set"):
             rgb = batch['rgb'].to(device)  # (B, 3, H, W)
@@ -61,6 +61,7 @@ def main():
 
                 # need raw rgb for the dewarp
                 rgb_raw = np.array(Image.open(os.path.join(DATA_DIR, 'rgb', f'{filename}.jpg')).convert('RGB').resize(IMG_SIZE, Image.BILINEAR))
+                rgb_t = torch.from_numpy(rgb_raw).float().permute(2,0,1).unsqueeze(0)
                 
                 pred_uv = pred_uv_t[i].cpu().numpy().transpose(1, 2, 0).clip(0, 1)
                 
@@ -78,9 +79,15 @@ def main():
                 warped_t = torch.from_numpy(warped).float().permute(2, 0, 1).unsqueeze(0)
                 gt_t = torch.from_numpy(gt_img).float().permute(2, 0, 1).unsqueeze(0)
 
+                warped_gt = dewarp_with_uv(rgb_raw, gt_uv, out_size=512, mask=fg_mask)
+                warped_gt_t = torch.from_numpy(warped_gt).float().permute(2, 0, 1).unsqueeze(0)
+                ssim_gt.append(ssim(warped_gt_t, gt_t, data_range=255).item()) # SSIM of GT dewarp vs GT for reference
+                ssim_no_dewarp.append(ssim(rgb_t, gt_t, data_range=255).item())
                 ssim_values.append(ssim(warped_t, gt_t, data_range=255).item()) # TODO: what is data range here?
     
     print(f"Average SSIM: {np.mean(ssim_values):.4f}")
+    print(f"No dewarp SSIM: {np.mean(ssim_no_dewarp):.4f}")
+    print(f"GT UV SSIM: {np.mean(ssim_gt):.4f}")
     print(f"N images: {len(ssim_values)}")
 
     
