@@ -35,14 +35,10 @@ To calculate the SSIM score, the validation set from training (at a 80:20 split)
 The repository contains a few runnable scripts:
 
 - **inference.py**: processes a provided input folder of images, runs them through the network and saves rectified versions along with the predicted UV maps. Example usage (only input dir is required):
-  ```python
-  python inference.py --input_dir <path-to-your-input-folder> --output_dir <path-to-where-you-want-results> --weights best_model.pth
-  ```
+  `python inference.py --input_dir <path-to-your-input-folder> --output_dir <path-to-where-you-want-results> --weights best_model.pth`
 
 - **evaluate.py**: computes the SSIM metric on the dataset, by splitting the validation split in half (none of the arguments are required, all have defaults). This will create a txt file containing the average SSIM on the heldout data, as well as write the individual SSIM number for each image.
-  ```python
-  python evaluate.py --input_dir <path-to-dataset-input> --output <path-to-where-you-want-results> --weights best_model.pth
-  ```
+  `python evaluate.py --input_dir <path-to-dataset-input> --output <path-to-where-you-want-results> --weights best_model.pth`
 
 Importantly, the repository contains a few dependencies required to run: `torch, torchvision, timm, pytorch-mssim, numpy, matplotlib`
 
