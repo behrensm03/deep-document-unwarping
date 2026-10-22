@@ -3,9 +3,22 @@ import os
 import numpy as np
 import torch
 from PIL import Image
-from tqdm import tqdm
 from model import DocumentReconstructionModel
 from uv_dewarp import dewarp_with_uv
+import re
+
+"""
+Inference script for document dewarping, to satisfy the requirement of automatically processing a provided input folder of images.
+Arguments:
+    - input_dir: folder containing input images to process (required)
+    - output_dir: where to save the rectified outputs and predicted UV maps (optional, defaults to './results')
+    - weights: path to the model weights (optional, defaults to 'best_model.pth')
+
+The script will look for images in the input folder, run them through the model to predict UV maps, call the post-processing dewarping function, and then save both the rectified outputs and the predicted UV maps to the output folder.
+The names of the output files will be based on the input filenames - if the input filenames match the `crumpled_N` pattern, then the corresponding outputs will be named `rectified_N` and `predicted_uv_N`. If instead the input filenames are some other format, say `filename.jpg`, then the corresponding outputs will be named `rectified_filename` and `predicted_uv_filename`.
+Note: the model works with images of size 512x512, so if the input images are a different size they will be resized for processing and the outputs will be 512x512 as well.
+
+"""
 
 def load_img(path, img_size):
     img = Image.open(path).convert('RGB').resize((img_size, img_size), Image.BILINEAR)
@@ -61,7 +74,7 @@ def main():
 
     # process the images
     with torch.no_grad():
-        for n, frame in enumerate(tqdm(image_files, desc="Processing")):
+        for n, frame in enumerate(image_files):
             img_path = os.path.join(args.input_dir, frame)
             try:
                 tensor, rgb_raw = load_img(img_path, IMG_SIZE)
@@ -75,6 +88,9 @@ def main():
                 rectified = dewarp_with_uv(rgb_raw, pred_uv, out_size=512, mask=None)
 
                 # save outputs
+                stem = os.path.splitext(frame)[0]
+                match = re.fullmatch(r'crumpled_(\d+)', stem)
+                n = match.group(1) if match else stem
                 rect_path = os.path.join(args.output_dir, f"rectified_{n}.png")
                 uv_path = os.path.join(args.output_dir, f"predicted_uv_{n}.png")
                 Image.fromarray(rectified).save(rect_path)

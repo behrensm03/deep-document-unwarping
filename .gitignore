@@ -3,13 +3,14 @@ renders/
 renders.zip
 .DS_Store
 archive/
-test-inference/
-test-inference-gt/
+test-inference*/
 comparison/
 models/
 results/
 results-*/
 checkpoints/
+submission/
+sample-output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -218,3 +219,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+submission.zip
+best_model.pth

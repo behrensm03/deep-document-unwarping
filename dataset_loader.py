@@ -59,7 +59,6 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from PIL import Image
 import numpy as np
-from tqdm import tqdm
 import timm
 
 
@@ -852,7 +851,7 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1} [Train]", leave=False)):
+    for batch_idx, batch in enumerate(dataloader):
         # Move data to device
         rgb = batch['rgb'].to(device)
         ground_truth = batch['ground_truth'].to(device)
@@ -920,7 +919,7 @@ def validate(
     total_loss = 0.0
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Validation"):
+        for batch in dataloader:
             rgb = batch['rgb'].to(device)
             ground_truth = batch['ground_truth'].to(device)
 

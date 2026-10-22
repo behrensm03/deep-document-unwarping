@@ -3,21 +3,33 @@ import os
 import numpy as np
 import torch
 from PIL import Image
-from tqdm import tqdm
 from model import DocumentReconstructionModel
 from uv_dewarp import dewarp_with_uv
 from dataset_loader import get_dataloaders
 import torch.nn as nn
 from pytorch_msssim import ssim
 
+
+"""
+Evaluation script to compute SSIM of the dewarped output using the model's predicted UV maps.
+The model writes to a provided output file the average SSIM across the test set, as well as the individual SSIM values for each image.
+The script assumes the dataset is organized in a way compatible with the get_dataloaders function. It loads the dataset with the standard 80:20 train-val split, and then further splits out half of the validation set as a test set. The SSIM metric is computed on this test set.
+
+Arguments:
+    - input_dir: Path to the dataset for evaluation (must be compatible with the get_dataloaders function, ie contains an 'rgb' folder and a 'uv' folder). This is optional and will default to 'renders/synthetic_data_pitch_sweep'.
+    - weights: Path to the model weights (optional, default: 'best_model.pth').
+    - output: File to save the SSIM results (optional, default: './ssim-output.txt').
+"""
+
 def main():
     parser = argparse.ArgumentParser(description="Document dewarping inference")
+    parser.add_argument('--input_dir', default='renders/synthetic_data_pitch_sweep', help='Path to dataset for evaluation')
     parser.add_argument('--weights',    default='best_model.pth', help='Path to model weights')
     parser.add_argument('--output', default='./ssim-output.txt', help='File to save SSIM results')
     args = parser.parse_args()
 
     # Configuration
-    DATA_DIR = 'renders/synthetic_data_pitch_sweep'
+    DATA_DIR = args.input_dir
     BATCH_SIZE = 8
     IMG_SIZE = (512, 512)
 
@@ -49,7 +61,7 @@ def main():
     # compute ssim on test set
     ssim_values, ssim_gt, ssim_no_dewarp = [], [], []
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Evaluating on test set"):
+        for batch in test_loader:
             rgb = batch['rgb'].to(device)  # (B, 3, H, W)
             gt_uv_t = batch['uv']  # (B, 2, H, W)
             filenames = batch['filename'] 
